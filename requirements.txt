@@ -1,0 +1,7 @@
+# 项目依赖清单（用 pip install -r requirements.txt 一键安装）
+# 每个库后面注明用途，方便理解为什么需要它
+
+requests>=2.31.0        # 发送 HTTP 请求（抓取网页接口数据）
+pandas>=2.0.0           # 把数据组织成表格，方便写入 Excel
+openpyxl>=3.1.0         # 读写 Excel 文件（pandas 写 Excel 的引擎）
+pycryptodome>=3.19.0    # AES 解密（网站报价接口返回的数据是加密的）
