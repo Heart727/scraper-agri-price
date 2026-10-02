@@ -72,6 +72,26 @@ def build_cli():
     return cli
 
 
+def format_report_summary(sheets):
+    """Format only workbooks sheets that actually exist, with compact numbering."""
+    present = [(name, count, unit) for name, count, unit in sheets if count]
+    return [
+        f"{number}. {name} —— {count} {unit}"
+        for number, (name, count, unit) in enumerate(present, start=1)
+    ]
+
+
+def configure_console_encoding():
+    """Prevent unsupported progress symbols from crashing Windows GBK terminals."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(errors="backslashreplace")
+            except (OSError, ValueError):
+                pass
+
+
 def load_categories():
     """从网站拉取品种树，返回 {大类名: [品种...]} 和 {代码前缀: 大类名}。
 
@@ -84,7 +104,7 @@ def load_categories():
         code_map = parse_mod.build_code_category_map(tree_payload)
     except (fetcher.FetchError, ValueError) as exc:
         # 品种树拿不到 = 后续全废，给出明确提示并退出（退出码 1 = 异常退出）
-        print(f"❌ 无法获取品种目录，程序终止。原因：{exc}")
+        print(f"[错误] 无法获取品种目录，程序终止。原因：{exc}")
         sys.exit(1)
     return tree, code_map
 
@@ -103,7 +123,7 @@ def pick_categories(tree, requested_names):
         if name in tree:
             chosen[name] = tree[name]
         else:
-            print(f"❌ 网站上没有叫「{name}」的分类。可用分类：{', '.join(tree.keys())}")
+            print(f"[错误] 网站上没有叫「{name}」的分类。可用分类：{', '.join(tree.keys())}")
             sys.exit(1)
     return chosen
 
@@ -118,7 +138,7 @@ def fetch_growth_ranking(code_map):
         data_date = date_list[0] if date_list else None
         return rows, unit, data_date
     except (fetcher.FetchError, ValueError) as exc:
-        print(f"⚠️ 涨跌幅排行获取失败（已跳过）：{exc}")
+        print(f"[提示] 涨跌幅排行获取失败（已跳过）：{exc}")
         return [], "", None
 
 
@@ -130,13 +150,13 @@ def fetch_indexes():
             fetcher.post_json(config.API_PRICE_INDEX_DAY)
         )
     except (fetcher.FetchError, ValueError) as exc:
-        print(f"⚠️ 价格指数（日序列）获取失败（已跳过）：{exc}")
+        print(f"[提示] 价格指数（日序列）获取失败（已跳过）：{exc}")
     try:
         level_rows = parse_mod.parse_index_by_level(
             fetcher.post_json(config.API_INDEX_BY_LEVEL)
         )
     except (fetcher.FetchError, ValueError) as exc:
-        print(f"⚠️ 分类价格指数获取失败（已跳过）：{exc}")
+        print(f"[提示] 分类价格指数获取失败（已跳过）：{exc}")
     return day_rows, level_rows
 
 
@@ -147,7 +167,7 @@ def fetch_today_markets():
             fetcher.post_json(config.API_TODAY_MARKETS, {"provinceCode": ""})
         )
     except (fetcher.FetchError, ValueError) as exc:
-        print(f"⚠️ 今日报送市场名单获取失败（已跳过）：{exc}")
+        print(f"[提示] 今日报送市场名单获取失败（已跳过）：{exc}")
         return []
 
 
@@ -215,7 +235,7 @@ def fetch_variety_quotes(chosen_categories, cached_quotes, data_date, refresh=Fa
         if batch_banned and ban_rounds < config.MAX_RATE_LIMIT_WAITS:
             ban_rounds += 1
             print()
-            print(f"⚠️ 网站限流，本轮有 {len(batch_banned)} 个品种被拦截。")
+            print(f"[提示] 网站限流，本轮有 {len(batch_banned)} 个品种被拦截。")
             print(f"   已自动停手，等待 {ban_wait} 秒后继续（第 {ban_rounds}/{config.MAX_RATE_LIMIT_WAITS} 次等待）...")
             if not _countdown_wait(ban_wait):
                 # 用户在等待时按了 Ctrl+C：尊重用户，生成已有数据
@@ -229,9 +249,9 @@ def fetch_variety_quotes(chosen_categories, cached_quotes, data_date, refresh=Fa
         # 走到这里：要么限流等待次数用完，要么只是普通失败。不再纠缠，收尾。
         failed_names.extend(v["name"] for _, v in batch_banned + batch_failed)
         if batch_banned:
-            print(f"\n⚠️ 限流等待次数已用完，剩余 {len(batch_banned)} 个品种本次放弃（可用 --refresh 稍后补抓）。")
+            print(f"\n[提示] 限流等待次数已用完，剩余 {len(batch_banned)} 个品种本次放弃（可用 --refresh 稍后补抓）。")
         elif batch_failed:
-            print(f"\n⚠️ 有 {len(batch_failed)} 个品种抓取失败（网络原因），本次跳过。")
+            print(f"\n[提示] 有 {len(batch_failed)} 个品种抓取失败（网络原因），本次跳过。")
         break
 
     # 收尾：把最终结果再完整存一次缓存
@@ -404,14 +424,14 @@ def generate_report(output_path, data_date, ranking_rows, quote_rows, day_rows, 
 
     # 核心数据一个都没有 = 本次运行没有产出，明确提示而不是悄悄生成空文件
     if not sheets:
-        print("❌ 所有数据都没有抓到，未生成报表。请检查网络后重试。")
+        print("[错误] 所有数据都没有抓到，未生成报表。请检查网络后重试。")
         sys.exit(1)
 
     try:
         report_mod.build_excel(output_path, data_date or _today(), sheets)
     except PermissionError:
         # Windows 上最常见的场景：目标文件正在 Excel 里打开着，被系统锁住了
-        print(f"❌ 无法写入报表文件「{output_path}」。")
+        print(f"[错误] 无法写入报表文件「{output_path}」。")
         print("   原因：该文件被其他程序占用（很可能正开着 Excel 看它）。")
         print("   处理：关闭 Excel 里的这个文件后重新运行即可；")
         print("         数据已在本地缓存，重新运行只需要几秒钟。")
@@ -457,7 +477,7 @@ def acquire_run_lock():
                 old_pid = int(file.read().strip())
             # 旧锁对应的进程还活着 = 真有任务在跑，不能抢
             if _pid_alive(old_pid):
-                print(f"❌ 检测到另一个抓取任务正在运行（进程号 {old_pid}）。")
+                print(f"[错误] 检测到另一个抓取任务正在运行（进程号 {old_pid}）。")
                 print("   两个任务同时爬会互相触发网站限流，所以这里拦住了。")
                 print("   处理：等它跑完，或先在任务管理器里结束它，再重新运行。")
                 sys.exit(1)
@@ -483,6 +503,7 @@ def release_run_lock():
 
 def main():
     """程序入口：按顺序编排上面所有步骤。"""
+    configure_console_encoding()
     cli = build_cli()
     args = cli.parse_args()
 
@@ -514,11 +535,11 @@ def main():
     day_rows, level_rows = fetch_indexes()
     market_rows = fetch_today_markets()
     if ranking_rows:
-        print(f"  ✓ 涨跌幅排行 {len(ranking_rows)} 条（数据日期：{data_date}）")
+        print(f"  [完成] 涨跌幅排行 {len(ranking_rows)} 条（数据日期：{data_date}）")
     if day_rows:
-        print(f"  ✓ 价格指数日序列 {len(day_rows)} 天")
+        print(f"  [完成] 价格指数日序列 {len(day_rows)} 天")
     if market_rows:
-        print(f"  ✓ 今日报送市场 {len(market_rows)} 家")
+        print(f"  [完成] 今日报送市场 {len(market_rows)} 家")
 
     # 缓存按"数据日期"分天存放；拿不到数据日期就用本地日期兜底
     run_date = data_date or _today()
@@ -539,7 +560,7 @@ def main():
         f"其中 {quoted} 个品种今日有市场报价。"
     )
     if quote_rows:
-        print(f"  ✓ 品种报价汇总 {quoted} 行")
+        print(f"  [完成] 品种报价汇总 {quoted} 行")
 
     # 第 5 步：写 Excel 文件
     output_path = args.output or config.OUTPUT_FILE_TEMPLATE.format(date=data_date or _today())
@@ -550,17 +571,16 @@ def main():
 
     # 收尾：打印本次运行小结
     print("\n" + "=" * 60)
-    print(f"报表包含 {sum(1 for _ in [ranking_rows, quote_rows, day_rows, level_rows, market_rows] if _)} 个工作表：")
-    if ranking_rows:
-        print(f"  1. 涨跌幅排行TOP20 —— {len(ranking_rows)} 条")
-    if quote_rows:
-        print(f"  2. 分类品种批发价 —— {len(quote_rows)} 条（本次核心数据）")
-    if day_rows:
-        print(f"  3. 批发价格指数(日) —— {len(day_rows)} 天")
-    if level_rows:
-        print(f"  4. 分类价格指数 —— {len(level_rows)} 条")
-    if market_rows:
-        print(f"  5. 今日报送市场 —— {len(market_rows)} 家")
+    summary_lines = format_report_summary([
+        ("涨跌幅排行TOP20", len(ranking_rows), "条"),
+        ("分类品种批发价", len(quote_rows), "条（本次核心数据）"),
+        ("批发价格指数(日)", len(day_rows), "天"),
+        ("分类价格指数", len(level_rows), "条"),
+        ("今日报送市场", len(market_rows), "家"),
+    ])
+    print(f"报表包含 {len(summary_lines)} 个工作表：")
+    for line in summary_lines:
+        print(f"  {line}")
     print("=" * 60)
 
 

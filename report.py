@@ -38,7 +38,7 @@ def build_excel(output_path, report_date, sheets):
                 writer, sheet_name="空报表", index=False
             )
 
-    print(f"✅ 报表已生成：{output_path}")
+    print(f"[完成] 报表已生成：{output_path}")
 
 
 def _format_sheet(writer, sheet_name, frame, report_date, note):
