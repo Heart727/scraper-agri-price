@@ -1,38 +1,16 @@
 # -*- coding: utf-8 -*-
-"""report.py —— Excel 报表生成层
-
-把解析好的数据写成一份带格式的 Excel 日报：
-  - 多工作表：涨跌幅排行 / 分类品种批发价 / 价格指数 / 分类指数 / 报送市场
-  - 表头加粗、带底色，列宽自动调整，前两行冻结（方便滚动查看）
-  - 文件名带数据日期，例如：农产品批发价格日报_2026-08-13.xlsx
-
-用到的库：pandas（把数据组织成表格）+ openpyxl（写 Excel 并加格式）
-"""
+"""Excel 报表生成层：把公开批发价格整理成可筛选的市场简报。"""
 import pandas as pd
-
-import config
 
 
 def build_excel(output_path, report_date, sheets):
-    """把多个工作表的数据一次性写进一个 Excel 文件。
-
-    参数：
-      output_path：输出文件路径（由 main.py 拼接好）
-      report_date：数据日期字符串（如 "2026-08-13"），写进标题行
-      sheets：{工作表名: (列表数据, 备注)} 的有序字典，
-              列表数据会被 pandas 转成表格，备注写在表头上一行。
-    """
-    # 创建一个 Excel 写入器，engine="openpyxl" 表示用 openpyxl 引擎（支持格式）
+    """写入多工作表 Excel 日报，并为每张表应用一致的编辑部式版面。"""
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        # 逐个工作表写入
-        for index, (sheet_name, (rows, note)) in enumerate(sheets.items()):
-            # 列表转成 DataFrame（pandas 的"表格"对象）
+        for sheet_name, (rows, note) in sheets.items():
             frame = pd.DataFrame(rows)
-            # startrow=1：第 1 行空出来写"数据日期"标题
             frame.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
             _format_sheet(writer, sheet_name, frame, report_date, note)
 
-        # 如果没有任何工作表（数据全为空），写一个提示页，保证文件不是空文件
         if not sheets:
             pd.DataFrame({"提示": ["本次没有抓取到任何数据"]}).to_excel(
                 writer, sheet_name="空报表", index=False
@@ -42,74 +20,124 @@ def build_excel(output_path, report_date, sheets):
 
 
 def _format_sheet(writer, sheet_name, frame, report_date, note):
-    """给某个工作表加格式：标题行、表头样式、列宽、冻结窗格。"""
-    worksheet = writer.sheets[sheet_name]
+    """把标题、筛选表头、交替行底色和涨跌提示应用到单张工作表。"""
+    from openpyxl.formatting.rule import CellIsRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
 
-    # ---- 第 1 行：报表标题（数据日期 + 备注说明）----
-    title = f"数据日期：{report_date}"
-    if note:
-        title += f"　｜　{note}"
-    worksheet.cell(row=1, column=1, value=title)
-    # 标题加粗、放大一点、给个浅色底
-    title_cell = worksheet.cell(row=1, column=1)
-    title_cell.font = _font(bold=True, size=11, color="1F4E79")
-    # 把标题行占用的宽度合并起来（合并到最后一列），视觉上更像报表标题
+    worksheet = writer.sheets[sheet_name]
+    navy = "182A38"
+    amber = "D9A441"
+    ink = "263742"
+    muted = "66747A"
+    ivory = "FFFDFA"
+    stripe = "F5F0E5"
+    grid = "E8E1D4"
+    positive = "A63E34"  # 国内行情表常用红色表示上涨
+    negative = "39745B"  # 绿色表示下跌
     max_col = max(len(frame.columns), 1)
+    max_row = len(frame) + 2
+    thin_rule = Side(style="thin", color=grid)
+    amber_rule = Side(style="medium", color=amber)
+
+    worksheet.sheet_view.showGridLines = False
+    worksheet.sheet_properties.tabColor = amber
+
+    title = f"全国农产品价格简报　/　{report_date}"
+    if note:
+        title += f"　·　{note}"
+    for column in range(1, max_col + 1):
+        cell = worksheet.cell(row=1, column=column)
+        cell.fill = PatternFill("solid", fgColor=navy)
+        cell.border = Border(bottom=amber_rule)
+    title_cell = worksheet.cell(row=1, column=1)
+    title_cell.value = title
+    title_cell.font = Font(name="微软雅黑", size=14, bold=True, color="FFFFFF")
+    title_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
     if max_col > 1:
         worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+    worksheet.row_dimensions[1].height = 33
 
-    # ---- 第 2 行：表头（加粗 + 深色底 + 白字）----
-    for col_index, column_name in enumerate(frame.columns, start=1):
-        cell = worksheet.cell(row=2, column=col_index)
-        cell.font = _font(bold=True, color="FFFFFF")
-        cell.fill = _fill("2E75B6")  # 深蓝色底
-        cell.alignment = _center()
+    for column, column_name in enumerate(frame.columns, start=1):
+        cell = worksheet.cell(row=2, column=column)
+        cell.font = Font(name="微软雅黑", size=10, bold=True, color=navy)
+        cell.fill = PatternFill("solid", fgColor=amber)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = Border(bottom=Side(style="medium", color=navy))
+    worksheet.row_dimensions[2].height = 27
 
-    # ---- 数据行：数字列统一保留两位小数，让表格更整齐 ----
-    for row_index in range(3, 3 + len(frame)):
-        for col_index, column_name in enumerate(frame.columns, start=1):
-            cell = worksheet.cell(row=row_index, column=col_index)
-            if "元/公斤" in column_name or "(%)" in column_name or "指数" in column_name:
-                # 数字列：设置两位小数的显示格式
-                cell.number_format = "0.00"
+    for row in range(3, max_row + 1):
+        row_fill = ivory if row % 2 else stripe
+        worksheet.row_dimensions[row].height = 23
+        for column, column_name in enumerate(frame.columns, start=1):
+            cell = worksheet.cell(row=row, column=column)
+            is_numeric = isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)
+            cell.font = Font(
+                name="微软雅黑", size=10,
+                color=ink if is_numeric else muted,
+            )
+            cell.fill = PatternFill("solid", fgColor=row_fill)
+            cell.alignment = Alignment(
+                horizontal="right" if is_numeric else "left",
+                vertical="center",
+            )
+            cell.border = Border(bottom=thin_rule)
+            if is_numeric:
+                if "(%)" in str(column_name) or "涨跌幅" in str(column_name):
+                    cell.number_format = '0.00"%"'
+                elif "元/公斤" in str(column_name):
+                    cell.number_format = "0.00"
+                elif "指数" in str(column_name):
+                    cell.number_format = "0.00"
+                elif isinstance(cell.value, float):
+                    cell.number_format = "#,##0.00"
 
-    # ---- 列宽：按"表头长度"和"该列内容最大长度"自动调整 ----
-    for col_index, column_name in enumerate(frame.columns, start=1):
-        # pandas 从第 3 行开始放数据（前面空了两行），逐行找最长的字符串
-        max_length = len(str(column_name))
-        for row_index in range(3, 3 + len(frame)):
-            value = worksheet.cell(row=row_index, column=col_index).value
+    if len(frame.columns):
+        last_column = get_column_letter(len(frame.columns))
+        worksheet.auto_filter.ref = f"A2:{last_column}{max_row}"
+
+    for column, column_name in enumerate(frame.columns, start=1):
+        longest = len(str(column_name))
+        for row in range(3, max_row + 1):
+            value = worksheet.cell(row=row, column=column).value
             if value is not None:
-                # 中文字符占两个显示宽度，所以长度按 2 倍算
-                text = str(value)
-                length = sum(2 if ord(ch) > 127 else 1 for ch in text)
-                max_length = max(max_length, length)
-        # 宽度 = 最长内容 + 留白，同时设一个上限防止某列过宽
-        # 注：列字母用 get_column_letter 换算（第 1 行是合并单元格，不能直接读它）
-        from openpyxl.utils import get_column_letter
+                longest = max(
+                    longest,
+                    sum(2 if ord(char) > 127 else 1 for char in str(value)),
+                )
+        worksheet.column_dimensions[get_column_letter(column)].width = min(
+            max(longest + 3, 12), 38
+        )
 
-        worksheet.column_dimensions[get_column_letter(col_index)].width = min(max_length + 2, 60)
+        if "涨跌幅" in str(column_name) or "涨跌额" in str(column_name):
+            column_letter = get_column_letter(column)
+            price_range = f"{column_letter}3:{column_letter}{max_row}"
+            worksheet.conditional_formatting.add(
+                price_range,
+                CellIsRule(
+                    operator="greaterThan",
+                    formula=["0"],
+                    fill=PatternFill("solid", fgColor="F8E4DF"),
+                    font=Font(color=positive, bold=True),
+                ),
+            )
+            worksheet.conditional_formatting.add(
+                price_range,
+                CellIsRule(
+                    operator="lessThan",
+                    formula=["0"],
+                    fill=PatternFill("solid", fgColor="E6F0E7"),
+                    font=Font(color=negative, bold=True),
+                ),
+            )
 
-    # ---- 冻结窗格：滚动数据时，标题和表头始终可见 ----
     worksheet.freeze_panes = "A3"
+    worksheet.print_title_rows = "1:2"
+    worksheet.page_setup.orientation = "landscape"
+    worksheet.page_setup.fitToWidth = 1
+    worksheet.page_setup.fitToHeight = 0
+    worksheet.sheet_properties.pageSetUpPr.fitToPage = True
 
 
-def _font(bold=False, size=10, color="000000"):
-    """生成 openpyxl 的字体对象（避免在代码里反复写一长串）。"""
-    from openpyxl.styles import Font
-
-    return Font(name="微软雅黑", size=size, bold=bold, color=color)
-
-
-def _fill(color):
-    """生成 openpyxl 的填充对象（给单元格上底色）。"""
-    from openpyxl.styles import PatternFill
-
-    return PatternFill(start_color=color, end_color=color, fill_type="solid")
-
-
-def _center():
-    """生成居中对齐样式。"""
-    from openpyxl.styles import Alignment
-
-    return Alignment(horizontal="center", vertical="center")
+if __name__ == "__main__":
+    print("此模块由 main.py 调用，不建议单独运行。")
